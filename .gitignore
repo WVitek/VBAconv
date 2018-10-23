@@ -259,3 +259,7 @@ paket-files/
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
 *.pyc
+/Converting Code from VBA to Visual Basic .NET _ Microsoft Docs_files
+/Converting Code from VBA to Visual Basic .NET _ Microsoft Docs.html
+/tregsvr_.exe
+/tregsvr.exe
