@@ -25,141 +25,252 @@ namespace TryParse
 
     class MyRewriter : VisualBasicSyntaxRewriter
     {
-        enum State { SkipIntro = 0, GatherMembers, InProp }
 
-        string className;
-        List<SyntaxTrivia> gatheredTrivias = new List<SyntaxTrivia>();
-        List<StatementSyntax> gatheredMembers = new List<StatementSyntax>();
-        State state = State.SkipIntro;
+        readonly ListVisitor _visitor = new ListVisitor();
 
-        //public override SyntaxNode Visit(SyntaxNode node)
-        //{
-        //    var repl = base.Visit(node);
-        //}
-
-        public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
+        public override SyntaxList<SyntaxNode> VisitList<SyntaxNode>(SyntaxList<SyntaxNode> list)
         {
-            var unit = (CompilationUnitSyntax)base.VisitCompilationUnit(node);
-            if (className != null)
-            {
-                var cls = SyntaxFactory.ClassStatement(className);
-                cls = cls.AddModifiers(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-                var blk = SyntaxFactory.ClassBlock(cls)
-                    .NormalizeWhitespace("  ", false)
-                    .WithMembers(unit.Members)
-                    ;
-                unit = unit.WithMembers(new SyntaxList<StatementSyntax>(blk));
-            }
-            return unit;
+            var items = list.SelectMany(_visitor.Visit).Cast<SyntaxNode>().ToList();
+            if (items.Count == 0)
+                return new SyntaxList<SyntaxNode>();
+            return new SyntaxList<SyntaxNode>((IEnumerable<SyntaxNode>)items);
         }
 
-        SyntaxNode Skip1(SyntaxNode node)
+        class ListVisitor : VisualBasicSyntaxVisitor<IEnumerable<SyntaxNode>>
         {
-            if (state != State.SkipIntro)
-                return node;
-            if (node.HasLeadingTrivia)
-                gatheredTrivias.AddRange(node.GetLeadingTrivia());
-            if (node.HasTrailingTrivia)
-                gatheredTrivias.AddRange(node.GetTrailingTrivia());
-            return null;
-        }
+            enum State { SkipIntro = 0, GatherMembers, InProp, PropEnded }
 
-        public override SyntaxNode VisitExpressionStatement(ExpressionStatementSyntax node) => Skip1(node);
-        public override SyntaxNode VisitAssignmentStatement(AssignmentStatementSyntax node) => null;
-        public override SyntaxNode VisitStopOrEndStatement(StopOrEndStatementSyntax node) => Skip1(node);
-        public override SyntaxNode VisitOptionStatement(OptionStatementSyntax node) => Skip1(node);
+            string className;
+            List<SyntaxTrivia> gatheredTrivias = new List<SyntaxTrivia>();
+            List<StatementSyntax> gatheredMembers = new List<StatementSyntax>();
+            State state = State.SkipIntro;
 
-        public override SyntaxNode VisitFieldDeclaration(FieldDeclarationSyntax node)
-        {
-            if (state == State.SkipIntro)
+            public override IEnumerable<SyntaxNode> VisitCompilationUnit(CompilationUnitSyntax node)
             {
-                foreach (var decl in node.Declarators)
+                var unit = (CompilationUnitSyntax)base.VisitCompilationUnit(node).First();
+                if (className != null)
                 {
-                    if (decl.AsClause != null)
-                        break;
-                    if (decl.Initializer == null)
-                        continue;
-                    var name = Convert.ToString(decl.Names.FirstOrDefault());
-                    if (name.StartsWith("VB_"))
-                    {
-                        if (name == "VB_Name")
-                            className = Convert.ToString(decl.Initializer.Value).Trim('"');
-                        return null;
-                    }
+                    var cls = SyntaxFactory.ClassStatement(className);
+                    cls = cls.AddModifiers(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
+                    var blk = SyntaxFactory.ClassBlock(cls)
+                        .NormalizeWhitespace("  ", false)
+                        .WithMembers(unit.Members)
+                        ;
+                    unit = unit.WithMembers(new SyntaxList<StatementSyntax>(blk));
                 }
+                yield return unit;
+            }
+
+            //public override IEnumerable<SyntaxNode> Visit(SyntaxNode node)
+            //{
+            //    var prevState = state;
+            //    int nPrev = gatheredPropStatements.Count;
+            //    var res = base.Visit(node);
+            //    if ((prevState == State.InProp || state == State.InProp) && gatheredPropStatements.Count <= nPrev)
+            //    {
+            //        gatheredPropStatements.Add(node);
+            //        return Enumerable.Empty<SyntaxNode>();
+            //    }
+            //    else return res;
+            //}
+
+            public override IEnumerable<SyntaxNode> DefaultVisit(SyntaxNode node)
+            {
+                var repl = base.DefaultVisit(node);
+                if (state != State.InProp)
+                    return repl;
+                if (repl != null)
+                    gatheredPropStatements.AddRange(repl);
+                return Enumerable.Empty<SyntaxNode>();
+            }
+
+            IEnumerable<SyntaxNode> Skip(SyntaxNode node)
+            {
+                if (node.HasLeadingTrivia)
+                    gatheredTrivias.AddRange(node.GetLeadingTrivia());
+                if (node.HasTrailingTrivia)
+                    gatheredTrivias.AddRange(node.GetTrailingTrivia());
+                return Enumerable.Empty<SyntaxNode>();
+            }
+
+            public override IEnumerable<SyntaxNode> VisitStopOrEndStatement(StopOrEndStatementSyntax node)
+                => (state == State.SkipIntro) ? Skip(node) : base.VisitStopOrEndStatement(node);
+
+            public override IEnumerable<SyntaxNode> VisitOptionStatement(OptionStatementSyntax node)
+                => (state == State.SkipIntro) ? Skip(node) : base.VisitOptionStatement(node);
+
+            public override IEnumerable<SyntaxNode> VisitExpressionStatement(ExpressionStatementSyntax node)
+                => (state == State.SkipIntro) ? Skip(node) : base.VisitExpressionStatement(node);
+
+            public override IEnumerable<SyntaxNode> VisitAssignmentStatement(AssignmentStatementSyntax node)
+                => (state == State.SkipIntro) ? Skip(node) : base.VisitAssignmentStatement(node);
+
+            enum AccessorKind { Get, Set };
+
+            IEnumerable<SyntaxNode> EndProp()
+            {
+                var gps = gatheredPropStatements;
                 state = State.GatherMembers;
+                var prop = gps.OfType<PropertyStatementSyntax>()
+                    .First(p => p.KindOfVBAPropStat() != SyntaxKind.None);
+                // Property
+                yield return prop
+                    .WithIdentifier(SyntaxFactory.Identifier(prevPropName))
+                    .WithParameterList(SyntaxFactory.ParameterList());
+                // Accessors
+                SyntaxKind keyword = SyntaxKind.None;
+                EndBlockStatementSyntax lastEBS = null;
+                for (int i = 0; i < gps.Count; i++)
+                {
+                    switch (keyword)
+                    {
+                        case SyntaxKind.None:
+                            var pss = gps[i] as PropertyStatementSyntax;
+                            if (pss == null)
+                                break;
+                            //*** BEGIN of property accessor
+                            keyword = pss.KindOfVBAPropStat();
+                            var paramz = (keyword == SyntaxKind.GetKeyword) ? default(ParameterListSyntax) : pss.ParameterList;
+                            yield return SyntaxFactory
+                                .GetAccessorStatement(pss.AttributeLists, SyntaxFactory.TokenList(), SyntaxFactory.Token(keyword), paramz)
+                                .WithTrailingTrivia(pss.GetTrailingTrivia());
+                            continue;
+                        case SyntaxKind.GetKeyword:
+                        case SyntaxKind.SetKeyword:
+                            var ebs = gps[i] as EndBlockStatementSyntax;
+                            if (ebs == null || ebs.BlockKeyword.Text != "Property")
+                                break;
+                            //*** END of property accessor
+                            lastEBS = ebs;
+                            //yield return ebs.WithEndKeyword(SyntaxFactory.Token(keyword));
+                            var endKeyword = SyntaxFactory.Token(SyntaxKind.EndKeyword).WithTriviaFrom(ebs.EndKeyword);
+                            var blockKeyword = SyntaxFactory.Token(keyword).WithTriviaFrom(ebs.BlockKeyword);
+                            var res = (keyword == SyntaxKind.GetKeyword)
+                                ? SyntaxFactory.EndGetStatement(endKeyword, blockKeyword)
+                                : SyntaxFactory.EndSetStatement(endKeyword, blockKeyword);
+                            yield return res;
+                            keyword = SyntaxKind.None;
+                            continue;
+                    }
+                    yield return gps[i];
+                }
+                // End Property
+
+                yield return SyntaxFactory.EndPropertyStatement(
+                    SyntaxFactory.Token(SyntaxKind.EndKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    SyntaxFactory.Token(SyntaxKind.PropertyKeyword).WithTriviaFrom(lastEBS.BlockKeyword)
+                    );
+                //
+                gatheredPropStatements.Clear();
+                prevPropName = null;
             }
-            else if (state == State.InProp)
-                EndProp();
 
-            var repl = base.VisitFieldDeclaration(node);
-            if (gatheredTrivias.Count > 0)
+            public override IEnumerable<SyntaxNode> VisitFieldDeclaration(FieldDeclarationSyntax node)
             {
-                if (repl.HasLeadingTrivia)
-                    gatheredTrivias.AddRange(repl.GetLeadingTrivia());
-                repl = repl.WithLeadingTrivia(gatheredTrivias);
-                gatheredTrivias.Clear();
+                switch (state)
+                {
+                    case State.SkipIntro:
+                        foreach (var decl in node.Declarators)
+                        {
+                            if (decl.AsClause != null)
+                                break;
+                            if (decl.Initializer == null)
+                                continue;
+                            var name = Convert.ToString(decl.Names.FirstOrDefault());
+                            if (name.StartsWith("VB_"))
+                            {
+                                if (name == "VB_Name")
+                                    className = Convert.ToString(decl.Initializer.Value).Trim('"');
+                                yield break;
+                            }
+                        }
+                        state = State.GatherMembers;
+                        break;
+                    case State.InProp:
+                        foreach (var n in base.VisitFieldDeclaration(node))
+                            yield return n;
+                        yield break;
+                    case State.PropEnded:
+                        foreach (var sn in EndProp())
+                            yield return sn;
+                        state = State.GatherMembers;
+                        break;
+                }
+                var repl = node;
+                if (gatheredTrivias.Count > 0)
+                {
+                    if (repl.HasLeadingTrivia)
+                        gatheredTrivias.AddRange(repl.GetLeadingTrivia());
+                    repl = repl.WithLeadingTrivia(gatheredTrivias);
+                    gatheredTrivias.Clear();
+                }
+                yield return repl;
             }
-            return repl;
-        }
 
-        void EndProp()
-        {
-            state = State.GatherMembers;
-            //throw new NotImplementedException();
-        }
+            string prevPropName;
+            List<SyntaxNode> gatheredPropStatements = new List<SyntaxNode>();
 
-        string prevPropName;
-        List<SyntaxNode> gatheredPropStatements = new List<SyntaxNode>();
-
-        public override SyntaxNode VisitPropertyStatement(PropertyStatementSyntax node)
-        {
-            var propAccessor = node.Identifier.Text;
-            switch (node.Identifier.Text)
+            public override IEnumerable<SyntaxNode> VisitPropertyStatement(PropertyStatementSyntax node)
             {
-                case "Get":
-                case "Let":
-                case "Set":
-                    break;
-                default:
+                System.Diagnostics.Trace.Assert(node.KindOfVBAPropStat() != SyntaxKind.None);
+
+                var propName = node.Identifier.TrailingTrivia.ElementAtOrDefault(1).ToString();
+                if (string.IsNullOrWhiteSpace(propName))
                     return base.VisitPropertyStatement(node);
+
+                var fromPrevProp = (prevPropName != null && prevPropName != propName) ? EndProp().ToList() : null;
+
+                state = State.InProp;
+                prevPropName = propName;
+                gatheredPropStatements.Add(node);
+
+                return fromPrevProp ?? Enumerable.Empty<SyntaxNode>();
             }
-            var propName = node.Identifier.TrailingTrivia.ElementAtOrDefault(1).ToString();
-            if (string.IsNullOrWhiteSpace(propName))
-                return base.VisitPropertyStatement(node);
 
-            if (prevPropName != propName)
-                EndProp();
+            public override IEnumerable<SyntaxNode> VisitEndBlockStatement(EndBlockStatementSyntax node)
+            {
+                if (state == State.InProp)
+                {
+                    if (node.BlockKeyword.Text == "Property")
+                        state = State.PropEnded;
+                    gatheredPropStatements.Add(node);
+                    return Enumerable.Empty<SyntaxNode>();
+                }
+                else return base.VisitEndBlockStatement(node);
 
-            state = State.InProp;
-            prevPropName = propName;
-            gatheredPropStatements.Add(node);
-            return null;
+            }
+
+            public override IEnumerable<SyntaxNode> VisitMethodBlock(MethodBlockSyntax node)
+            {
+                if (state == State.InProp)
+                    EndProp();
+                return base.VisitMethodBlock(node);
+            }
+
+            public override IEnumerable<SyntaxNode> VisitInvocationExpression(InvocationExpressionSyntax node)
+            {
+                var args = node.ArgumentList
+                    .WithOpenParenToken(SyntaxFactory.Token(SyntaxKind.OpenBraceToken))
+                    .WithCloseParenToken(SyntaxFactory.Token(SyntaxKind.CloseBraceToken));
+                return base.VisitInvocationExpression(node.WithArgumentList(args));
+            }
+
         }
+    }
 
-        public override SyntaxNode VisitEndBlockStatement(EndBlockStatementSyntax node)
+    static class SyntaxExts
+    {
+        public static SyntaxKind KindOfVBAPropStat(this PropertyStatementSyntax pss)
         {
-            var repl = base.VisitEndBlockStatement(node);
-            if (state != State.InProp)
-                return repl;
-            gatheredPropStatements.Add(repl);
-            return null;
-        }
-
-        public override SyntaxNode VisitMethodBlock(MethodBlockSyntax node)
-        {
-            if (state == State.InProp)
-                EndProp();
-            return base.VisitMethodBlock(node);
-        }
-
-        public override SyntaxNode VisitEmptyStatement(EmptyStatementSyntax node)
-        {
-            var repl = base.VisitEmptyStatement(node);
-            if (state != State.InProp)
-                return repl;
-            gatheredPropStatements.Add(repl);
-            return null;
+            if (pss == null)
+                return SyntaxKind.None;
+            switch (pss.Identifier.Text)
+            {
+                case "Get": return SyntaxKind.GetKeyword;
+                case "Let": return SyntaxKind.SetKeyword;
+                case "Set": return SyntaxKind.SetKeyword;
+                default: return SyntaxKind.None;
+            }
         }
     }
 }

@@ -78,18 +78,19 @@
     Private c_MugTres_Curve As New TInterpolation      ' кривая вязкости газа от давления при пластовой температуре
     Private c_MugT_Curve As New TInterpolation         ' кривая вязкости газа от давления при пластовой температуре
 
-    Public Property Get ZNLF() As Boolean
-    ZNLF = p_ZNLF
- End Property
-
-    Public Property Let ZNLF(ByVal val As Boolean)
-    p_ZNLF = val
-    If p_ZNLF Then
-        wc_fr = 0      ' обнуляем содержание воды
-        Qliq_scm3day = 0 ' зануляем поток жидкости - ничего не движется. Это занулит поток газа из скважины
-    Else
-    ' ничего не делаем
-    End If
+    Public Property ZNLF() As Boolean
+        Get
+            ZNLF = p_ZNLF
+        End Get
+        Set(ByVal val As Boolean)
+            p_ZNLF = val
+            If p_ZNLF Then
+                wc_fr = 0      ' обнуляем содержание воды
+                Qliq_scm3day = 0 ' зануляем поток жидкости - ничего не движется. Это занулит поток газа из скважины
+            Else
+                ' ничего не делаем
+            End If
+        End Set
     End Property
 
     Public Property Get wc_fr() As Double
