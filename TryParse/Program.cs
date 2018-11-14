@@ -28,12 +28,19 @@ namespace TryParse
 
         readonly ListVisitor _visitor = new ListVisitor();
 
-        public override SyntaxList<SyntaxNode> VisitList<SyntaxNode>(SyntaxList<SyntaxNode> list)
+        public override SyntaxList<SyntaxNode> VisitList<SyntaxNode>(SyntaxList<SyntaxNode> nodes)
         {
-            var items = list.SelectMany(_visitor.Visit).Cast<SyntaxNode>().ToList();
+            var items = new List<SyntaxNode>(nodes.Count);
+            foreach (var n in nodes)
+            {
+                var lst = _visitor.Visit(n);
+                if (lst != null)
+                    foreach (var r in lst)
+                        items.Add((SyntaxNode)r);
+            }
             if (items.Count == 0)
                 return new SyntaxList<SyntaxNode>();
-            return new SyntaxList<SyntaxNode>((IEnumerable<SyntaxNode>)items);
+            return new SyntaxList<SyntaxNode>(items);
         }
 
         class ListVisitor : VisualBasicSyntaxVisitor<IEnumerable<SyntaxNode>>
@@ -45,41 +52,14 @@ namespace TryParse
             List<StatementSyntax> gatheredMembers = new List<StatementSyntax>();
             State state = State.SkipIntro;
 
-            public override IEnumerable<SyntaxNode> VisitCompilationUnit(CompilationUnitSyntax node)
-            {
-                var unit = (CompilationUnitSyntax)base.VisitCompilationUnit(node).First();
-                if (className != null)
-                {
-                    var cls = SyntaxFactory.ClassStatement(className);
-                    cls = cls.AddModifiers(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-                    var blk = SyntaxFactory.ClassBlock(cls)
-                        .NormalizeWhitespace("  ", false)
-                        .WithMembers(unit.Members)
-                        ;
-                    unit = unit.WithMembers(new SyntaxList<StatementSyntax>(blk));
-                }
-                yield return unit;
-            }
-
-            //public override IEnumerable<SyntaxNode> Visit(SyntaxNode node)
-            //{
-            //    var prevState = state;
-            //    int nPrev = gatheredPropStatements.Count;
-            //    var res = base.Visit(node);
-            //    if ((prevState == State.InProp || state == State.InProp) && gatheredPropStatements.Count <= nPrev)
-            //    {
-            //        gatheredPropStatements.Add(node);
-            //        return Enumerable.Empty<SyntaxNode>();
-            //    }
-            //    else return res;
-            //}
-
             public override IEnumerable<SyntaxNode> DefaultVisit(SyntaxNode node)
             {
                 var repl = base.DefaultVisit(node);
                 if (state != State.InProp)
                     return repl;
-                if (repl != null)
+                if (repl == null)
+                    gatheredPropStatements.Add(node);
+                else
                     gatheredPropStatements.AddRange(repl);
                 return Enumerable.Empty<SyntaxNode>();
             }
