@@ -34,7 +34,9 @@ namespace TryParse
             foreach (var n in nodes)
             {
                 var lst = _visitor.Visit(n);
-                if (lst != null)
+                if (lst == null)
+                    items.Add(n);
+                else
                     foreach (var r in lst)
                         items.Add((SyntaxNode)r);
             }
@@ -45,11 +47,11 @@ namespace TryParse
 
         class ListVisitor : VisualBasicSyntaxVisitor<IEnumerable<SyntaxNode>>
         {
+            //*
             enum State { SkipIntro = 0, GatherMembers, InProp, PropEnded }
 
             string className;
             List<SyntaxTrivia> gatheredTrivias = new List<SyntaxTrivia>();
-            List<StatementSyntax> gatheredMembers = new List<StatementSyntax>();
             State state = State.SkipIntro;
 
             public override IEnumerable<SyntaxNode> DefaultVisit(SyntaxNode node)
@@ -58,7 +60,21 @@ namespace TryParse
                 if (state != State.InProp)
                     return repl;
                 if (repl == null)
-                    gatheredPropStatements.Add(node);
+                {
+                    if (node.Kind() == SyntaxKind.ExpressionStatement)
+                    {   // fix: VisitExpressionStatement
+                        var es = (ExpressionStatementSyntax)node;
+                        if (es.Expression.Kind() == SyntaxKind.InvocationExpression)
+                        {
+                            var ie = (InvocationExpressionSyntax)es.Expression;
+                            repl = VisitInvocationExpression(ie);
+                            es = es.WithExpression(repl.OfType<InvocationExpressionSyntax>().First());
+                            gatheredPropStatements.Add(es);
+                        }
+                        else gatheredPropStatements.Add(node);
+                    }
+                    else gatheredPropStatements.Add(node);
+                }
                 else
                     gatheredPropStatements.AddRange(repl);
                 return Enumerable.Empty<SyntaxNode>();
@@ -80,7 +96,12 @@ namespace TryParse
                 => (state == State.SkipIntro) ? Skip(node) : base.VisitOptionStatement(node);
 
             public override IEnumerable<SyntaxNode> VisitExpressionStatement(ExpressionStatementSyntax node)
-                => (state == State.SkipIntro) ? Skip(node) : base.VisitExpressionStatement(node);
+            {
+                if (state == State.SkipIntro)
+                    return Skip(node);
+                var repl = base.VisitExpressionStatement(node);
+                return repl;
+            }
 
             public override IEnumerable<SyntaxNode> VisitAssignmentStatement(AssignmentStatementSyntax node)
                 => (state == State.SkipIntro) ? Skip(node) : base.VisitAssignmentStatement(node);
@@ -96,7 +117,9 @@ namespace TryParse
                 // Property
                 yield return prop
                     .WithIdentifier(SyntaxFactory.Identifier(prevPropName))
-                    .WithParameterList(SyntaxFactory.ParameterList());
+                    .WithParameterList(SyntaxFactory.ParameterList())
+                    .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+                    ;
                 // Accessors
                 SyntaxKind keyword = SyntaxKind.None;
                 EndBlockStatementSyntax lastEBS = null;
@@ -126,7 +149,9 @@ namespace TryParse
                             var endKeyword = SyntaxFactory.Token(SyntaxKind.EndKeyword).WithTriviaFrom(ebs.EndKeyword);
                             var blockKeyword = SyntaxFactory.Token(keyword).WithTriviaFrom(ebs.BlockKeyword);
                             var res = (keyword == SyntaxKind.GetKeyword)
+                                // GET
                                 ? SyntaxFactory.EndGetStatement(endKeyword, blockKeyword)
+                                // SET
                                 : SyntaxFactory.EndSetStatement(endKeyword, blockKeyword);
                             yield return res;
                             keyword = SyntaxKind.None;
@@ -167,8 +192,22 @@ namespace TryParse
                         state = State.GatherMembers;
                         break;
                     case State.InProp:
-                        foreach (var n in base.VisitFieldDeclaration(node))
-                            yield return n;
+                        if (node.Modifiers.Count > 0 || node.Declarators.Any(n => !n.AsClause.IsMissing))
+                        {
+                            foreach (var n in base.VisitFieldDeclaration(node))
+                                yield return n;
+                        }
+                        else // VBA procedure call can be wrong parsed as field declaration
+                        {
+                            var methodName = node.GetLeadingTrivia().OfType<SkippedTokensTriviaSyntax>().FirstOrDefault().Tokens.FirstOrDefault().Text;
+                            //var args = 
+                            var argsSepList = SyntaxFactory.SeparatedList<ArgumentSyntax>(SyntaxFactory.NodeOrTokenList());
+                            var es = SyntaxFactory.InvocationExpression(
+                                SyntaxFactory.IdentifierName(methodName),
+                                SyntaxFactory.ArgumentList(argsSepList)
+                                );
+                            //SyntaxFactory.ExpressionStatement()
+                        }
                         yield break;
                     case State.PropEnded:
                         foreach (var sn in EndProp())
@@ -226,13 +265,16 @@ namespace TryParse
                     EndProp();
                 return base.VisitMethodBlock(node);
             }
+            //*/
 
             public override IEnumerable<SyntaxNode> VisitInvocationExpression(InvocationExpressionSyntax node)
             {
-                var args = node.ArgumentList
-                    .WithOpenParenToken(SyntaxFactory.Token(SyntaxKind.OpenBraceToken))
-                    .WithCloseParenToken(SyntaxFactory.Token(SyntaxKind.CloseBraceToken));
-                return base.VisitInvocationExpression(node.WithArgumentList(args));
+                var args = node.ArgumentList;
+                args = args
+                    .WithOpenParenToken(SyntaxFactory.Token(SyntaxKind.OpenParenToken))
+                    .WithCloseParenToken(SyntaxFactory.Token(SyntaxKind.CloseParenToken).WithTrailingTrivia(args.GetTrailingTrivia()))
+                    ;
+                yield return node.WithArgumentList(args);
             }
 
         }
